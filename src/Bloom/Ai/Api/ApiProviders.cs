@@ -63,6 +63,17 @@ internal static class ApiProviders
             NestedEffort = true,
             Balance = ApiBalanceWay.OpenRouter,
         },
+        new("river", "River", "https://api.river.ai/v1", ApiWire.ChatCompletions, "https://console.river.ai")
+        {
+            // River's OpenAI-compatible inference endpoint serves DeepSeek under the model's full ID.
+            Preferred = new[] { "deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-ai/DeepSeek-V4.1-Flash" },
+            EffortRules = new ApiEffortRule[] { new("deepseek-ai/deepseek-v4.1-flash", "none", "high", "max") },
+            ReplaysReasoning = true,
+        },
+        new("inception", "Inception", "https://api.inceptionlabs.ai/v1", ApiWire.ChatCompletions, "https://platform.inceptionlabs.ai/dashboard/api-keys")
+        {
+            Preferred = new[] { "mercury-3" },
+        },
         new("deepseek", "DeepSeek", "https://api.deepseek.com", ApiWire.ChatCompletions, "https://platform.deepseek.com/api_keys")
         {
             // its thinking mode (api-docs.deepseek.com/guides/thinking_mode): with tools, every earlier turn's reasoning goes back

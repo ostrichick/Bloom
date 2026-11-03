@@ -24,7 +24,7 @@ internal static class Home
 {
     public static readonly (string key, string name, string about, char glyph, bool on, int count, bool right)[] Kinds =
     {
-        ("usage", Tr("AI 사용량", "AI usage"), Tr("Claude Code · Codex에 물어본 5시간 · 주간 사용량", "5-hour and weekly usage, asked of Claude Code and Codex"), G.Model, true, 0, false),
+        ("usage", Tr("AI 사용량", "AI usage"), Tr("Claude Code · Codex · Antigravity · OpenCode 사용량", "Claude Code, Codex, Antigravity and OpenCode usage"), G.Model, true, 0, false),
         ("tokens", Tr("토큰 사용량", "Token usage"), Tr("API 환산액 · 토큰 · 호출 · 캐시 적중률 · 처음 켜면 기록 전체를 백그라운드에서 한 번 읽음 · 압축된 Codex 기록 제외", "API-priced cost, tokens, calls, cache hits · the first time on, all logs are read once in the background · compressed Codex logs left out"), G.Speed, false, 0, false),
         ("tokenchart", Tr("토큰 그래프", "Token chart"), Tr("시간 · 날짜별 토큰 막대그래프 · 처음 켜면 기록 전체를 백그라운드에서 한 번 읽음 · 압축된 Codex 기록 제외", "Tokens by hour or day as bars · the first time on, all logs are read once in the background · compressed Codex logs left out"), G.Clock, false, 0, false),
         ("tokenmodels", Tr("모델별 사용량", "Usage by model"), Tr("토큰을 많이 쓴 모델과 그 비율 · effort 비율 · 처음 켜면 기록 전체를 백그라운드에서 한 번 읽음 · 압축된 Codex 기록 제외", "The models that used the most tokens, and their share · effort mix · the first time on, all logs are read once in the background · compressed Codex logs left out"), G.Sliders, false, 5, true),

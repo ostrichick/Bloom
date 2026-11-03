@@ -18,6 +18,18 @@ internal static class ApiTests
     private static ApiRequest Request(string provider, ApiWire wire, string? effort = null, params ApiMessage[] messages) =>
         new(P(provider), "sk-test", "model-x", wire, "Be brief.", messages.Length > 0 ? messages : new[] { new ApiMessage(ApiMessage.User, "hi", Array.Empty<string>()) }, effort, null);
 
+    public static void RiverModelsAndEndpoint()
+    {
+        var river = P("river");
+        Check.Eq(river.Url("chat/completions"), "https://api.river.ai/v1/chat/completions", "River uses its own inference API, not DeepSeek's endpoint");
+        Check.Eq(river.Url("models"), "https://api.river.ai/v1/models", "River model discovery");
+        Check.Eq(river.Preferred[0], "deepseek-ai/DeepSeek-V4.1-Flash-1017", "the current DeepSeek release is preferred");
+        Check.True(river.ReplaysReasoning, "DeepSeek reasoning is kept for subsequent tool calls");
+        Check.Eq(string.Join(",", ApiProviders.EffortsFor(river, river.Preferred[0])), "auto,none,high,max", "River DeepSeek reasoning levels");
+        var models = ApiCatalog.Parse(river, "{\"data\":[{\"id\":\"deepseek-ai/DeepSeek-V4.1-Flash\"},{\"id\":\"deepseek-ai/DeepSeek-V4.1-Flash-1017\"}]}");
+        Check.True(models.Count == 2 && models.All(m => m.Wire == ApiWire.ChatCompletions), "River models can be selected in Bloom");
+    }
+
     public static void SseEvents()
     {
         var sse = new SseParser();

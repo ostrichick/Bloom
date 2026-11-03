@@ -22,7 +22,7 @@ internal static class HomeViews
     {
         if (accounts.Count == 0)
         {
-            var none = Theme.T(AiUsage.Busy ? Tr("AI 사용량 조회 중…", "Checking AI usage…") : Tr("사용량 조회 실패 · Claude Code 또는 Codex 로그인 상태를 확인하고 ↻로 다시 조회하세요", "Could not get usage. Check the Claude Code or Codex sign-in, then press ↻."), 12.5, Theme.P.TextFaint);
+            var none = Theme.T(AiUsage.Busy ? Tr("AI 사용량 조회 중…", "Checking AI usage…") : Tr("사용량 조회 실패 · Claude Code · Codex · OpenCode 로그인 또는 Antigravity 실행 상태를 확인한 뒤 ↻를 누르세요", "Could not get usage. Check your Claude Code, Codex or OpenCode sign-in, or whether Antigravity is running, then press ↻."), 12.5, Theme.P.TextFaint);
             none.Margin = new Thickness(22, 2, 22, 8);
             return none;
         }
@@ -30,12 +30,12 @@ internal static class HomeViews
         int columns = Math.Min(accounts.Count, PerRow);
         for (int c = 0; c < columns; c++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         // 홈 편집's tools move and rename accounts: an API key's balance card is none, and stays where it is
-        var movable = accounts.Where(a => a.Balance is null).ToList();
+        var movable = accounts.Where(a => a.Balance is null && Core.AiAccounts.Find(a.Id) is not null).ToList();
         for (int i = 0; i < accounts.Count; i++)
         {
             if (i % PerRow == 0) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var a = accounts[i];
-            var card = Card(a, AiUsage.Who(a, accounts), edit is { } e && a.Balance is null ? CardTools(movable, movable.IndexOf(a), e) : null);
+            var card = Card(a, AiUsage.Who(a, accounts), edit is { } e && movable.Contains(a) ? CardTools(movable, movable.IndexOf(a), e) : null);
             card.Margin = new Thickness(4, i >= PerRow ? 8 : 0, 4, 0);
             Grid.SetColumn(card, i % PerRow);
             Grid.SetRow(card, i / PerRow);
@@ -152,7 +152,7 @@ internal static class HomeViews
         head.Children.Add(name);
         if (DateTime.Now - a.Fetched > TimeSpan.FromMinutes(15)) // this side failed since: its numbers are old
         {
-            var age = Theme.T(Tr($"{Ago(DateTime.Now - a.Fetched)} 전", $"{Ago(DateTime.Now - a.Fetched)} ago"), 11, Theme.P.TextFaint, Theme.Regular, false);
+            var age = Theme.T(Tr($"{Duration(DateTime.Now - a.Fetched)} 전", $"{Duration(DateTime.Now - a.Fetched)} ago"), 11, Theme.P.TextFaint, Theme.Regular, false);
             age.ToolTip = Tr("마지막으로 받은 때", "Last fetched");
             Grid.SetColumn(age, 1);
             head.Children.Add(age);
@@ -165,9 +165,12 @@ internal static class HomeViews
             mail.Margin = new Thickness(0, -3, 0, 4);
             stack.Children.Add(mail);
         }
-        if (AiUsage.Failed(a.Id) && Core.AiAccounts.Find(a.Id) is { } account)
+        if (AiUsage.Failed(a.Id) && (Core.AiAccounts.Find(a.Id) is not null || a.Id == OpenCodeUsage.Id))
         {
-            var need = Theme.T(Core.AiAccounts.NeedsSignIn(account, false), 11, Theme.P.Danger, Theme.Regular, false);
+            string needText = Core.AiAccounts.Find(a.Id) is { } account
+                ? Core.AiAccounts.NeedsSignIn(account, false)
+                : Tr("로그인 필요 · OpenCode를 실행해 갱신하세요", "Sign-in needed · run OpenCode to refresh it");
+            var need = Theme.T(needText, 11, Theme.P.Danger, Theme.Regular, false);
             need.TextTrimming = TextTrimming.CharacterEllipsis;
             need.Margin = new Thickness(0, -2, 0, 3);
             stack.Children.Add(need);
@@ -184,13 +187,18 @@ internal static class HomeViews
             right.Inlines.Add(new System.Windows.Documents.Run($"{Shown(l.Percent, left)}%") { FontFamily = Theme.Sans, FontSize = 11.5, FontWeight = Theme.Medium, Foreground = l.Percent >= 90 ? Theme.P.Danger : Theme.P.Text });
             if (left)
                 right.Inlines.Add(new System.Windows.Documents.Run(Tr(" 남음", " left")) { FontFamily = Theme.Sans, FontSize = 11, Foreground = Theme.P.TextDim });
+            var pace = Pace(l, DateTime.Now);
+            if (pace is { } pc)
+                right.Inlines.Add(PaceRun(l.Percent, pc));
             if (l.Resets is { } r)
-                right.Inlines.Add(new System.Windows.Documents.Run("  " + Ago(r - DateTime.Now)) { FontFamily = Theme.Sans, FontSize = 11, Foreground = Theme.P.TextFaint });
+                right.Inlines.Add(new System.Windows.Documents.Run("  " + Duration(r - DateTime.Now)) { FontFamily = Theme.Sans, FontSize = 11, Foreground = Theme.P.TextFaint });
             Typography.SetNumeralAlignment(right, FontNumeralAlignment.Tabular);
             Grid.SetColumn(right, 1);
             row.Children.Add(right);
             stack.Children.Add(row);
-            stack.Children.Add(Bar(left ? Shown(l.Percent, true) : l.Percent, l.Percent >= 90));
+            // 남은량 모드(left)의 바는 남은량을 채우므로, 권장선도 남은량 기준(100 - 권장 사용량)으로 뒤집는다.
+            double? marker = pace is not { } pm ? null : left ? 100 - pm.Expected : pm.Expected;
+            stack.Children.Add(Bar(left ? Shown(l.Percent, true) : l.Percent, l.Percent >= 90, l.Percent, marker));
         }
         if (a.Balance is { } balance) // an API key's card: "잔액  $12.34"
         {
@@ -228,36 +236,106 @@ internal static class HomeViews
         };
     }
 
-    /// A limit's tooltip line: the percent and the reset.
+    /// A limit's tooltip line: the percent, the recommended pace and the reset.
     private static string Tip(UsageLimit l, bool left)
     {
         string line = $"{l.Title}: {Shown(l.Percent, left)}%" + (left ? Tr(" 남음", " left") : "");
+        if (Pace(l, DateTime.Now) is { } pace)
+        {
+            int e = (int)Math.Round(pace.Expected), d = (int)Math.Round(pace.Delta);
+            if (d < -PaceBand)
+                line += Tr($" · 권장 {e}%보다 {-d}%p 여유", $" · {-d}pp under the {e}% pace");
+            else if (d > PaceBand)
+                line += Tr($" · 권장 {e}%보다 +{d}%p 초과", $" · +{d}pp over the {e}% pace");
+            else
+                line += Tr($" · 권장 {e}% pace", $" · on the {e}% pace");
+        }
         return l.Resets is { } r ? line + Tr($" · {r:M/d HH:mm} 초기화", $" · resets {r:M/d HH:mm}") : line;
     }
 
     /// The whole percent a card shows: used, or what's left (the two always add up to 100).
     private static double Shown(double used, bool left) => left ? Math.Max(0, 100 - Math.Round(used)) : Math.Round(used);
 
-    /// A thin bar filled to percent; danger = the limit is nearly used up (≥ 90% used), either way it counts.
-    internal static FrameworkElement Bar(double percent, bool danger)
+    /// How far apart actual use may sit from the straight-line pace before the card calls it under or over (±5%p).
+    private const double PaceBand = 5;
+
+    /// The straight-line pace: how much of the window should be used up by now
+    /// (elapsed / window length), and how far actual use sits from it (actual − expected, both in %p).
+    /// Null when the provider didn't say the window length or the reset time, so there is no line to keep to.
+    internal static (double Expected, double Delta)? Pace(UsageLimit l, DateTime now)
+    {
+        if (l.WindowMins is not { } window || window <= 0 || l.Resets is not { } resets)
+            return null;
+        double expected = (window - (resets - now).TotalMinutes) / window * 100;
+        expected = Math.Clamp(expected, 0, 100);
+        return (expected, l.Percent - expected);
+    }
+
+    /// The short pace note after the percent: "−10%p 여유" (under, quiet), "+8%p 초과" (over, amber or red) or
+    /// "· 권장 20%" (on pace, faint). `used` decides the over-pace colour, as the main percent does.
+    private static System.Windows.Documents.Run PaceRun(double used, (double Expected, double Delta) pace)
+    {
+        int e = (int)Math.Round(pace.Expected), d = (int)Math.Round(pace.Delta);
+        if (d < -PaceBand)
+            return new System.Windows.Documents.Run(Tr($"  {-d}%p 여유", $"  {-d}pp under")) { FontFamily = Theme.Sans, FontSize = 11, Foreground = Theme.P.TextDim };
+        if (d > PaceBand)
+            return new System.Windows.Documents.Run(Tr($"  +{d}%p 초과", $"  +{d}pp over")) { FontFamily = Theme.Sans, FontSize = 11, Foreground = used >= 90 ? Theme.P.Danger : PaceCaution() };
+        return new System.Windows.Documents.Run(Tr($"  · 권장 {e}%", $"  · pace {e}%")) { FontFamily = Theme.Sans, FontSize = 11, Foreground = Theme.P.TextFaint };
+    }
+
+    private static Brush PaceCaution()
+    {
+        var b = new SolidColorBrush(Theme.P.Dark ? Color.FromRgb(0xE8, 0xB0, 0x4A) : Color.FromRgb(0xB0, 0x6A, 0x00));
+        b.Freeze();
+        return b;
+    }
+
+    /// A thin bar filled to percent, with the straight-line pace as a small tick across it (null: no tick);
+    /// danger = the limit is nearly used up (≥ 90% used), either way it counts. `used` colours an over-pace
+    /// tick like the main percent; `marker` is the tick's place on this bar (the left-mode bar counts what's
+    /// left, so its caller passes 100 − expected there). TokenViews reuses the plain bar (no tick).
+    internal static FrameworkElement Bar(double percent, bool danger, double? used = null, double? marker = null)
     {
         double p = Math.Clamp(percent / 100, 0, 1);
-        var g = new Grid { Height = 4, Margin = new Thickness(0, 3, 0, 2) };
+        var g = new Grid { Height = 4, Margin = new Thickness(0, 3, 0, 2), VerticalAlignment = VerticalAlignment.Center };
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(p, 0.0001), GridUnitType.Star) });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(1 - p, 0.0001), GridUnitType.Star) });
         g.Children.Add(new SmoothBorder { CornerRadius = new CornerRadius(2), Background = Theme.P.Track });
         var fill = new SmoothBorder { CornerRadius = new CornerRadius(2), Background = danger ? Theme.P.Danger : Theme.P.Accent, Visibility = p <= 0 ? Visibility.Collapsed : Visibility.Visible };
         Grid.SetColumnSpan(g.Children[0], 2);
         g.Children.Add(fill);
-        return g;
+        if (marker is not { } m)
+            return g;
+        double e = Math.Clamp(m / 100, 0, 1);
+        bool over = used is { } u && u - m > PaceBand;
+        var outer = new Grid { Height = 8, Margin = new Thickness(0, 1, 0, 0) };
+        outer.Children.Add(g);
+        var mg = new Grid();
+        mg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(e, 0.0001), GridUnitType.Star) });
+        mg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        mg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(1 - e, 0.0001), GridUnitType.Star) });
+        var tick = new SmoothBorder
+        {
+            Width = 2,
+            Background = over ? (used! >= 90 ? Theme.P.Danger : PaceCaution()) : Theme.P.Text,
+            Opacity = over ? 1 : 0.75,
+            CornerRadius = new CornerRadius(1),
+            ToolTip = Tr($"이때 권장 {Math.Round(m)}%", $"Pace: {Math.Round(m)}% by now"),
+        };
+        Grid.SetColumn(tick, 1);
+        mg.Children.Add(tick);
+        outer.Children.Add(mg);
+        return outer;
     }
 
-    private static string Ago(TimeSpan t)
+    internal static string Duration(TimeSpan t)
     {
         if (t.TotalMinutes < 1) return Tr("곧", "now");
-        if (t.TotalMinutes < 60) return Tr($"{(int)t.TotalMinutes}분", $"{(int)t.TotalMinutes} min");
-        if (t.TotalHours < 24) return Tr($"{(int)t.TotalHours}시간", $"{(int)t.TotalHours} h");
-        return Tr($"{(int)t.TotalDays}일", $"{(int)t.TotalDays} d");
+        int minutes = (int)t.TotalMinutes;
+        int days = minutes / 1440, hours = minutes / 60 % 24, remainder = minutes % 60;
+        if (days > 0) return Tr($"{days}일 {hours}시간 {remainder}분", $"{days} d {hours} h {remainder} min");
+        if (hours > 0) return Tr($"{hours}시간 {remainder}분", $"{hours} h {remainder} min");
+        return Tr($"{remainder}분", $"{remainder} min");
     }
 
     private static readonly string[] Weekdays = { Tr("일", "Su"), Tr("월", "Mo"), Tr("화", "Tu"), Tr("수", "We"), Tr("목", "Th"), Tr("금", "Fr"), Tr("토", "Sa") };

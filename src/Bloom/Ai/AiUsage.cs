@@ -34,9 +34,10 @@ internal static class AiUsage
 
     public static DateTime? Fetched { get; private set; }
 
-    /// Claude Code or Codex is installed, or an API key has a balance card (ApiBalances): the block shows only then. The
-    /// CLIs are looked up once, again on each refresh (the lookups scan folders, and the home asks on every draw).
-    public static bool Available => (available ??= Find() is not (null, null)) || (madeUp is null && ApiBalances.Wanted);
+    /// Claude Code, Codex or OpenCode is installed, or an API key has a balance card (ApiBalances): the block shows only
+    /// then. The CLIs are looked up once, again on each refresh (the lookups scan folders, and the home asks on every draw).
+    public static bool Available => (available ??= Find() is not (null, null)) ||
+        (madeUp is null && (ApiBalances.Wanted || AntigravityUsage.Running || known.ContainsKey(AntigravityUsage.Id) || OpenCodeUsage.Available));
 
     /// The last look at this account gave nothing (signed out, or the CLI failed); its card keeps the old numbers.
     public static bool Failed(string id) => failed.Contains(id);
@@ -54,7 +55,10 @@ internal static class AiUsage
         {
             var now = DateTime.Now;
             // the API keys' balance cards after the accounts' (the recording mode's made-up cards have none)
-            var source = madeUp ?? AiAccounts.All.Where(a => !a.Hidden).Select(a => known.GetValueOrDefault(a.Id)).OfType<UsageAccount>().Concat(ApiBalances.Cards);
+            var source = madeUp ?? AiAccounts.All.Where(a => !a.Hidden).Select(a => known.GetValueOrDefault(a.Id)).OfType<UsageAccount>()
+                .Concat(known.GetValueOrDefault(AntigravityUsage.Id) is { } gemini ? new[] { gemini } : Array.Empty<UsageAccount>())
+                .Concat(known.GetValueOrDefault(OpenCodeUsage.Id) is { } opencode ? new[] { opencode } : Array.Empty<UsageAccount>())
+                .Concat(ApiBalances.Cards);
             return source.Select(a => a with { Limits = a.Limits.ConvertAll(l => l.Resets is { } r && r <= now ? l with { Percent = 0, Resets = null } : l) }).ToList();
         }
     }
@@ -151,8 +155,13 @@ internal static class AiUsage
         Func<AiAccount, Task<UsageAccount?>>? chatgpt = !light && codexCli is null ? null : a => AskChatGpt(a, codexCli, light);
         var c = Task.Run(() => Each(due.Where(a => a.Kind == "claude").ToList(), claude));
         var g = Task.Run(() => Each(due.Where(a => a.Kind == "chatgpt").ToList(), chatgpt));
+        var antigravity = Task.Run(() => Each(new List<AiAccount> { new() { Id = AntigravityUsage.Id, Kind = AntigravityUsage.Id } },
+            AntigravityUsage.Running ? _ => AntigravityUsage.Ask() : null));
+        string? opencodeCli = OpenCodeUsage.FindCli();
+        var opencode = Task.Run(() => Each(new List<AiAccount> { new() { Id = OpenCodeUsage.Id, Kind = OpenCodeUsage.Id } },
+            opencodeCli is null ? null : _ => OpenCodeUsage.Ask(opencodeCli)));
         var b = Task.Run(() => Balances()); // the API keys' balances beside them: one HTTPS request each, no CLI
-        if (await c | await g | await b) Fetched = DateTime.Now;
+        if (await c | await g | await antigravity | await opencode | await b) Fetched = DateTime.Now;
     }
 
     /// The API balance cards asked again; one provider's failure keeps its old card and the others'.
