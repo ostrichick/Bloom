@@ -2,6 +2,18 @@
 
 Each release on GitHub shows its section from this file (the workflow looks for `## <version>`).
 
+## 0.17.2
+
+- AI usage: each limit now keeps a straight-line pace. Next to the percent the card says how far use sits from where it should be at this point in the window ("10%p under", "+8%p over", "on the 20% pace"), and a small tick across the bar marks where the line is. Limits without a known window or reset time show as before.
+- AI usage: Antigravity and OpenCode cards. Antigravity's Gemini quotas and OpenCode's five-hour, weekly and monthly usage appear beside Claude and ChatGPT when their CLIs are around.
+- API providers: River uses its own inference API, with the current DeepSeek release preferred and its reasoning levels (auto, none, high, max).
+
+### 한국어
+
+- AI 사용량: 한도마다 권장 pace가 생겼습니다. % 옆에 지금 시점에서 있어야 할 양과 비교한 상태(10%p 여유, +8%p 초과, 권장 20% pace)가 표시되고, 바 위에 작은 선으로 권장 위치가 표시됩니다. 윈도우나 초기화 시각을 모르는 한도는 전과 같이 나옵니다.
+- AI 사용량: Antigravity와 OpenCode 카드가 생겼습니다. CLI가 있으면 Antigravity의 Gemini 한도와 OpenCode의 5시간 · 주간 · 월간 사용량이 Claude · ChatGPT 옆에 나옵니다.
+- API 제공자: River는 자체 추론 API를 쓰고, 최신 DeepSeek 릴리즈를 우선하며 추론 단계(auto, none, high, max)를 씁니다.
+
 ## 0.17.1
 
 - Mini player: the song's cover shows next to its title — the picture inside the file, or the album picture in its folder (cover.jpg, folder.jpg and the like). Songs show their real title, artist and album instead of the file name.
