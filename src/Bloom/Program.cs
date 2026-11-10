@@ -42,6 +42,9 @@ internal static class Program
         // Claude Code's PermissionRequest hook (설정 > 알림 > 알림 카드에서 승인): carries the request to the running Bloom's card
         // and prints its answer; no answer (Bloom not running, 터미널에서 답하기) leaves the terminal's own question
         if (args.Length >= 1 && args[0] == App.ClaudeApprovalHook.Arg) return App.ClaudeApprovalHook.Run(args);
+        // the SYSTEM probe task's run: the discovery (every command line is readable from up there) into the
+        // file Bloom reads; nothing starts, and no data folders are touched
+        if (args.Length == 2 && args[0] == Ai.AntigravityProbe.Arg) return Ai.AntigravityProbe.ProbeMain(args[1]);
         // the setup's install / update / uninstall steps start Bloom with their own arguments and end in Run. A downloaded
         // update never goes in at a start of Velopack's choosing (a second Bloom started only to signal the first would
         // close it): Updates.ApplyAtStart and Updates.ApplyOnQuit do that.

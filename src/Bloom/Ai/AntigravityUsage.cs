@@ -98,7 +98,47 @@ internal static class AntigravityUsage
         return null;
     }
 
+    /// True after a look found Antigravity running but no reachable server and no probe task:
+    /// the notices offer the one-UAC probe install then. False once the task answers or Antigravity closes.
+    internal static bool ProbeNeeded { get; private set; }
+
     private static async Task<List<Server>> Discover()
+    {
+        List<Server> servers;
+        try
+        {
+            string json = await DiscoverJson().ConfigureAwait(false);
+            servers = json.Length == 0 ? new() : ParseServers(json);
+        }
+        catch (JsonException)
+        {
+            servers = new();
+        }
+        if (servers.Count == 0 && Running)
+        {
+            // Elevated (or otherwise unreadable) command lines hide the token; the SYSTEM probe
+            // task reads them fine. Nothing to install, nothing offered.
+            string? probed = await AntigravityProbe.QueryAsync().ConfigureAwait(false);
+            if (probed is not null)
+            {
+                try
+                {
+                    servers = ParseServers(probed);
+                }
+                catch (JsonException)
+                {
+                    servers = new();
+                }
+            }
+            ProbeNeeded = servers.Count == 0 && !AntigravityProbe.Installed();
+        }
+        else ProbeNeeded = false;
+        return servers;
+    }
+
+    /// The discovery script's answer, raw ("" when powershell didn't answer). The --antigravity-probe
+    /// run (SYSTEM) writes this straight to the file; the normal path parses it below.
+    internal static async Task<string> DiscoverJson()
     {
         using var proc = new Process
         {
@@ -117,16 +157,16 @@ internal static class AntigravityUsage
         try
         {
             started = proc.Start();
-            if (!started) return new();
+            if (!started) return "";
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             string output = await proc.StandardOutput.ReadToEndAsync(timeout.Token);
             await proc.WaitForExitAsync(timeout.Token);
-            if (proc.ExitCode != 0) return new();
-            return ParseServers(output);
+            if (proc.ExitCode != 0) return "";
+            return output;
         }
-        catch (Exception e) when (e is System.ComponentModel.Win32Exception or OperationCanceledException or JsonException)
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or OperationCanceledException)
         {
-            return new();
+            return "";
         }
         finally
         {
