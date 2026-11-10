@@ -45,6 +45,9 @@ internal static class Program
         // the SYSTEM probe task's run: the discovery (every command line is readable from up there) into the
         // file Bloom reads; nothing starts, and no data folders are touched
         if (args.Length == 2 && args[0] == Ai.AntigravityProbe.Arg) return Ai.AntigravityProbe.ProbeMain(args[1]);
+        // the probe install's run (elevated, so schtasks needs no UAC of its own): the task and schtasks'
+        // own answer into the log file; nothing starts either
+        if (args.Length == 4 && args[0] == Ai.AntigravityProbe.InstallArg) return Ai.AntigravityProbe.InstallMain(args[1], args[2], args[3]);
         // the setup's install / update / uninstall steps start Bloom with their own arguments and end in Run. A downloaded
         // update never goes in at a start of Velopack's choosing (a second Bloom started only to signal the first would
         // close it): Updates.ApplyAtStart and Updates.ApplyOnQuit do that.

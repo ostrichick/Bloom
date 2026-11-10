@@ -32,7 +32,7 @@ internal static class AntigravityUsage
             }
         ConvertTo-Json -InputObject @($found) -Depth 3 -Compress
         """;
-    private sealed record Server(string Token, List<int> Ports);
+    internal sealed record Server(string Token, List<int> Ports);
 
     private static readonly HttpClient Http = new(new HttpClientHandler
     {
@@ -60,8 +60,15 @@ internal static class AntigravityUsage
 
     public static async Task<UsageAccount?> Ask()
     {
-        if (!Running) return null;
-        foreach (var server in await Discover())
+        List<Server> servers = ProbeServers(out DateTime at);
+        if (servers.Count == 0)
+        {
+            if (!Running) return null;
+            servers = await Discover();
+            at = DateTime.Now;
+            if (servers.Count == 0) return null;
+        }
+        foreach (var server in servers)
             foreach (int port in server.Ports)
                 foreach (string scheme in new[] { "https", "http" })
                 {
@@ -70,7 +77,7 @@ internal static class AntigravityUsage
                     {
                         try
                         {
-                            if (ParseSummary(summary) is { } card) return card;
+                            if (ParseSummary(summary, at) is { } card) return card;
                         }
                         catch (JsonException) { /* old or incomplete response; try the other methods */ }
                     }
@@ -81,7 +88,7 @@ internal static class AntigravityUsage
                     {
                         try
                         {
-                            if (ParseModels(status) is { } fallback) return fallback;
+                            if (ParseModels(status, at) is { } fallback) return fallback;
                         }
                         catch (JsonException) { /* try model configurations */ }
                     }
@@ -90,7 +97,7 @@ internal static class AntigravityUsage
                     {
                         try
                         {
-                            if (ParseModels(models) is { } fallback) return fallback;
+                            if (ParseModels(models, at) is { } fallback) return fallback;
                         }
                         catch (JsonException) { /* try another listening port */ }
                     }
@@ -98,9 +105,59 @@ internal static class AntigravityUsage
         return null;
     }
 
-    /// True after a look found Antigravity running but no reachable server and no probe task:
-    /// the notices offer the one-UAC probe install then. False once the task answers or Antigravity closes.
+    /// Servers from the probe task's file while it is fresh (the trigger task rewrites it every few
+    /// minutes); nothing is asked live then. Fresh failures (a rotated token) heal on the next write.
+    internal static List<Server> ProbeServers(out DateTime at)
+    {
+        at = DateTime.Now;
+        try
+        {
+            if (!AntigravityProbe.TryReadFresh(out string json, out DateTime write)) return new();
+            var servers = ParseProbeJson(json);
+            if (servers.Count == 0) return new();
+            ProbeNeeded = false;
+            needLogged = false;
+            at = write;
+            return servers;
+        }
+        catch (JsonException)
+        {
+            return new();
+        }
+    }
+
+    /// The probe file's shape: tokens and ports only, never command lines (which hold paths).
+    internal static string ProbeJson(string discoveryJson)
+    {
+        var servers = ParseServers(discoveryJson);
+        return System.Text.Json.JsonSerializer.Serialize(servers.ConvertAll(s => new { token = s.Token, ports = s.Ports }));
+    }
+
+    /// The probe file back into servers; garbage in, empty out is the caller's JsonException.
+    internal static List<Server> ParseProbeJson(string json)
+    {
+        var result = new List<Server>();
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Array) return result;
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            if (!item.TryGetProperty("token", out var token) || token.ValueKind != JsonValueKind.String) continue;
+            if (token.GetString() is not { Length: > 0 } value) continue;
+            var ports = new List<int>();
+            if (item.TryGetProperty("ports", out var raw) && raw.ValueKind == JsonValueKind.Array)
+                foreach (var entry in raw.EnumerateArray())
+                    if (entry.TryGetInt32(out int port) && port is > 0 and <= 65535 && !ports.Contains(port)) ports.Add(port);
+            if (ports.Count > 0) result.Add(new Server(value, ports));
+        }
+        return result;
+    }
+
+    /// True after a live look found Antigravity running but no reachable server and no fresh probe
+    /// file: the notices offer the one-UAC probe install then. False once the task answers, the file is
+    /// fresh, or Antigravity closes.
     internal static bool ProbeNeeded { get; private set; }
+    private static bool needLogged;
 
     private static async Task<List<Server>> Discover()
     {
@@ -116,23 +173,12 @@ internal static class AntigravityUsage
         }
         if (servers.Count == 0 && Running)
         {
-            // Elevated (or otherwise unreadable) command lines hide the token; the SYSTEM probe
-            // task reads them fine. Nothing to install, nothing offered.
-            string? probed = await AntigravityProbe.QueryAsync().ConfigureAwait(false);
-            if (probed is not null)
-            {
-                try
-                {
-                    servers = ParseServers(probed);
-                }
-                catch (JsonException)
-                {
-                    servers = new();
-                }
-            }
-            ProbeNeeded = servers.Count == 0 && !AntigravityProbe.Installed();
+            // Elevated (or otherwise unreadable) command lines hide the token; only the trigger task's
+            // file can carry it. Nothing live to offer here.
+            ProbeNeeded = true;
+            if (!needLogged) { needLogged = true; Log.Write("antigravity probe needed: running but unreachable, no fresh file"); }
         }
-        else ProbeNeeded = false;
+        else { ProbeNeeded = false; needLogged = false; }
         return servers;
     }
 

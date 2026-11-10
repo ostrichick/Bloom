@@ -215,11 +215,13 @@ internal static class Notices
     private static string? ResetsIn(UsageLimit l) => l.Resets is { } at && at > DateTime.Now ? Tr($"{Span(at - DateTime.Now)} 뒤 초기화", $"Resets in {Span(at - DateTime.Now)}") : null;
 
     private const string ProbeKey = "antigravity-probe";
-    private static bool probeShown, probeNag;
+    private static bool probeShown;
+    private static DateTime probeNagUntil;
 
     /// Antigravity runs elevated (or hides its command lines another way): its token is unreadable, so no
-    /// Gemini card. One card offers the probe install (one UAC prompt); shown once per run, gone for good
-    /// once the task answers (every look clears ProbeNeeded then).
+    /// Gemini card. One card offers the probe install (one UAC prompt); shown again 30 minutes after it goes
+    /// away unanswered, and gone for good once the task answers (every look clears ProbeNeeded then).
+    /// A suppressed Show (Windows holding notices) leaves nothing recorded, so the next look retries.
     private static void Probe()
     {
         if (!AntigravityUsage.ProbeNeeded)
@@ -227,25 +229,26 @@ internal static class Notices
             if (probeShown) { window?.Remove(ProbeKey); probeShown = false; }
             return;
         }
-        if (probeShown || probeNag || !Settings.Current.Notices) return;
+        if (probeShown || DateTime.Now < probeNagUntil || !Settings.Current.Notices) return;
+        if (!Quiet && UserBusy()) return; // Show would skip it: record nothing, retry on the next look
         probeShown = true;
         Show(new Notice("waiting", Tr("Antigravity · 사용량 확인", "Antigravity · Usage check"),
             Tr("관리자 권한으로 실행 중이라 사용량을 읽지 못했습니다", "Running elevated, so its usage can't be read"),
             Tr("한 번만 허용하면 이후 자동으로 읽습니다", "Allow once and it reads automatically after that"),
             ProbeKey, ActionText: Tr("허용하고 설치", "Allow and install"), Action: () => _ = InstallProbe(),
-            Gone: () => { probeShown = false; probeNag = true; }));
+            Gone: () => { probeShown = false; probeNagUntil = DateTime.Now.AddMinutes(30); }));
     }
 
     /// The probe task installed (the UAC prompt waits on a thread of its own), then told how it went.
     private static async Task InstallProbe()
     {
-        bool ok = await Task.Run(() => AntigravityProbe.Install() == AntigravityProbe.Outcome.Done);
+        var (ok, why) = await Task.Run(() => { var r = AntigravityProbe.Install(out string w); return (r == AntigravityProbe.Outcome.Done, w); });
         window?.Remove(ProbeKey);
         probeShown = false;
-        probeNag = true; // asked once this run, either way
+        probeNagUntil = DateTime.Now.AddMinutes(30); // asked once per half hour, either way
         Result(ok, Tr("Antigravity · 사용량 확인", "Antigravity · Usage check"),
             ok ? Tr("설치됐습니다 · 다음 사용량 조회부터 Gemini 카드가 나옵니다", "Installed · the Gemini card comes with the next usage refresh")
-               : Tr("설치하지 못했습니다 · 관리자 승인이 필요합니다", "Not installed · admin approval is needed"), null);
+               : Tr($"설치하지 못했습니다 · {why}", $"Not installed · {why}"), null);
         if (ok) _ = AiUsage.Refresh();
     }
 

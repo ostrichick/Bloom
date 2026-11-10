@@ -9,12 +9,12 @@ namespace Bloom.Ai;
 
 /// Antigravity runs elevated (or otherwise hides its command lines): the discovery in AntigravityUsage
 /// finds the language server's ports but not its --csrf_token, so the quota stays 401. One UAC approval
-/// installs a SYSTEM scheduled task with no triggers that runs this Bloom with --antigravity-probe
-/// (the same discovery, which can read every command line then) and writes the servers to a file Bloom
-/// reads. The task runs only on demand; after an uninstall it stays but never runs.
+/// installs a SYSTEM scheduled task that collects the usage every few minutes on its own; Bloom only
+/// reads the result file and never touches the task again, so the standard user needs no task rights.
 internal static class AntigravityProbe
 {
     public const string Arg = "--antigravity-probe";
+    public const string InstallArg = "--install-antigravity-probe";
 
     public enum Outcome { Done, Declined, Failed }
 
@@ -34,112 +34,129 @@ internal static class AntigravityProbe
 
     private static string Result => ResultPath(Paths.Local);
 
+    /// The collection rhythm: the task rewrites the file this often; Bloom trusts files this young.
+    internal const int TriggerMinutes = 10, FreshMinutes = 15;
+
     /// schtasks lines, split out so the tests can pin the quoting (paths with spaces).
-    internal static string QueryArgs(string task) => $"/Query /TN \"{task}\"";
-    internal static string RunArgs(string task) => $"/Run /TN \"{task}\"";
     internal static string DeleteArgs(string task) => $"/Delete /TN \"{task}\" /F";
-    internal static string CreateArgs(string task, string exe, string result) =>
-        $"/Create /TN \"{task}\" /TR \"\\\"{exe}\\\" {Arg} \\\"{result}\\\"\" /SC ONCE /ST 00:00 /RU SYSTEM /RL HIGHEST /F";
+    internal static string CreateArgs(string task, string exe, string result, string startHhMm) =>
+        $"/Create /TN \"{task}\" /TR \"\\\"{exe}\\\" {Arg} \\\"{result}\\\"\" /SC MINUTE /MO {TriggerMinutes} /ST {startHhMm} /RU SYSTEM /RL HIGHEST /F";
 
-    internal static bool IsFresh(DateTime writeUtc, DateTime startUtc) => writeUtc >= startUtc.AddSeconds(-2);
+    /// Today two minutes from now, for the first trigger (a past start only warns, but spare it).
+    internal static string TriggerStart(DateTime now) => now.AddMinutes(2).ToString("HH:mm");
 
-    public static bool Installed()
+    /// The task's file while it is fresh enough to show (anything older counts as no answer).
+    internal static bool TryReadFresh(out string json, out DateTime writeUtc)
     {
+        json = "";
+        writeUtc = DateTime.MinValue;
         try
         {
-            return RunSchtasks(QueryArgs(Name)).code == 0;
+            if (!File.Exists(Result)) return false;
+            writeUtc = File.GetLastWriteTimeUtc(Result);
+            if (!IsFresh(writeUtc)) return false;
+            json = File.ReadAllText(Result);
+            return true;
         }
-        catch (Exception e) when (e is Win32Exception or InvalidOperationException or IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            Log.Write("antigravity probe query: " + e.Message);
             return false;
         }
     }
 
-    /// The task (re)installed with one UAC prompt; already-correct tasks are left alone.
-    public static Outcome Install()
+    internal static bool IsFresh(DateTime writeUtc) => DateTime.UtcNow - writeUtc <= TimeSpan.FromMinutes(FreshMinutes);
+
+    /// The --install-antigravity-probe run (elevated, so schtasks needs no UAC of its own): creates the
+    /// task and leaves schtasks' own answer plus a same-context query in the log file. Everything comes
+    /// in as arguments because Paths is not initialized in this mode.
+    public static int InstallMain(string task, string result, string outlog)
     {
         try
         {
+            string exe = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+            var (code, output) = RunSchtasks(CreateArgs(task, exe, result, TriggerStart(DateTime.Now)));
+            string me;
+            try
+            {
+                using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+                bool admin = new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+                me = identity.Name + " admin=" + admin;
+            }
+            catch (Exception e) { me = "unknown: " + e.Message; }
+            var (qcode, qout) = RunSchtasks($"/Query /TN \"{task}\" /XML");
+            File.WriteAllText(outlog, $"who={me}\nexit {code}\n{output}\nquery-exit {qcode}\n{qout}");
+            return 0;
+        }
+        catch (Exception)
+        {
+            return 1;
+        }
+    }
+
+    /// The task (re)installed with one UAC prompt (for Bloom itself, so schtasks' answer is captured
+    /// and verified in the elevated run's own log). `why` says what schtasks answered when it didn't
+    /// work out (shown on the result card, not just the log). Bloom itself never queries the task.
+    public static Outcome Install() => Install(out _);
+
+    public static Outcome Install(out string why)
+    {
+        why = "";
+        try
+        {
             Directory.CreateDirectory(Paths.Local);
-            if (Installed() && TaskRuns(ResultOf(TaskName(Paths.IsDev, ShortInstance())))) return Outcome.Done;
-            int code = RunElevated(CreateArgs(Name, Exe(), Result));
+            string task = Name, result = Result, outlog = Path.Combine(Paths.Local, "antigravity-probe-install.log");
+            Log.Write("antigravity probe install: " + CreateArgs(task, Exe(), result, TriggerStart(DateTime.Now)));
+            int code = RunElevated(Exe(), $"{InstallArg} \"{task}\" \"{result}\" \"{outlog}\"");
             if (code == 1223) return Outcome.Declined; // ERROR_CANCELLED: the UAC prompt declined
-            bool ok = code == 0 && Installed();
-            Log.Write("antigravity probe install: " + (ok ? "done" : $"exit {code}"));
+            if (code != 0)
+            {
+                why = $"elevated helper exit {code}";
+                Log.Write("antigravity probe install: " + why);
+                return Outcome.Failed;
+            }
+            string answer = "";
+            for (int i = 0; i < 40 && !File.Exists(outlog); i++) Task.Delay(250).GetAwaiter().GetResult();
+            if (File.Exists(outlog)) answer = File.ReadAllText(outlog);
+            bool ok = TaskVerified(answer, result);
+            why = ok ? "" : $"helper exit {code}, schtasks: {FirstLine(answer)}";
+            Log.Write("antigravity probe install: " + (ok ? "done" : why));
             return ok ? Outcome.Done : Outcome.Failed;
         }
         catch (Exception e) when (e is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-            Log.Write("antigravity probe install: " + e.Message);
+            why = e.Message;
+            Log.Write("antigravity probe install: " + why);
             return Outcome.Failed;
         }
     }
 
     private static string Exe() => Process.GetCurrentProcess().MainModule?.FileName ?? Path.Combine(Paths.AppDir, "Bloom.exe");
 
-    private static string ResultOf(string task)
+    /// The elevated run's own answer names the task it verified itself (language-independent XML
+    /// elements, so no display language is assumed).
+    internal static bool TaskVerified(string outlog, string result)
     {
-        try
-        {
-            var (code, output) = RunSchtasks($"/Query /TN \"{task}\" /V /FO LIST");
-            if (code != 0) return "";
-            foreach (var line in output.Split('\n'))
-            {
-                const string key = "Task To Run:";
-                int at = line.IndexOf(key, StringComparison.OrdinalIgnoreCase);
-                if (at >= 0) return line[(at + key.Length)..].Trim();
-            }
-            return "";
-        }
-        catch (Exception e) when (e is Win32Exception or InvalidOperationException or IOException)
-        {
-            return "";
-        }
+        string args = CommandTag(outlog, "Arguments");
+        if (args.Length == 0) return false;
+        string decoded = System.Net.WebUtility.HtmlDecode(args);
+        return decoded.Contains(Arg, StringComparison.Ordinal) && decoded.Contains(result, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TaskRuns(string taskToRun) =>
-        taskToRun.Contains(Arg, StringComparison.Ordinal) && taskToRun.Contains(Result, StringComparison.OrdinalIgnoreCase);
+    internal static string CommandTag(string xml, string tag)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(xml, $"<{tag}>(.*?)</{tag}>", System.Text.RegularExpressions.RegexOptions.Singleline);
+        return m.Success ? m.Groups[1].Value : "";
+    }
 
     public static void Remove()
     {
         try
         {
-            if (RunElevated(DeleteArgs(Name)) == 0) Log.Write("antigravity probe removed");
+            if (RunElevated(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), DeleteArgs(Name)) == 0) Log.Write("antigravity probe removed");
         }
         catch (Exception e) when (e is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             Log.Write("antigravity probe remove: " + e.Message);
-        }
-    }
-
-    /// The task run on demand, then its file while fresh (the server ports and token of this moment).
-    /// Null when there is no task, it didn't answer in time, or the file isn't its answer.
-    public static async Task<string?> QueryAsync()
-    {
-        if (!Installed()) return null;
-        try
-        {
-            DateTime start = DateTime.UtcNow;
-            var (code, output) = RunSchtasks(RunArgs(Name));
-            if (code != 0)
-            {
-                Log.Write("antigravity probe run: exit " + code + " " + FirstLine(output));
-                return null;
-            }
-            for (int i = 0; i < 40; i++)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-                if (File.Exists(Result) && IsFresh(File.GetLastWriteTimeUtc(Result), start))
-                    return await File.ReadAllTextAsync(Result).ConfigureAwait(false);
-            }
-            Log.Write("antigravity probe run: no fresh file");
-            return null;
-        }
-        catch (Exception e) when (e is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
-        {
-            Log.Write("antigravity probe run: " + e.Message);
-            return null;
         }
     }
 
@@ -149,14 +166,13 @@ internal static class AntigravityProbe
         return (at >= 0 ? output[..at] : output).Trim();
     }
 
-    /// The --antigravity-probe run (SYSTEM, before anything else in Main): the discovery, whose
-    /// command lines are all readable from up there, straight into the file. 0 on the way out.
+    /// The --antigravity-probe run (SYSTEM, before anything else in Main): the discovery as tokens
+    /// and ports only (never command lines), straight into the file. 0 on the way out.
     public static int ProbeMain(string outfile)
     {
         try
         {
-            string json = AntigravityUsage.DiscoverJson().GetAwaiter().GetResult() ?? "[]";
-            File.WriteAllText(outfile, json);
+            File.WriteAllText(outfile, AntigravityUsage.ProbeJson(AntigravityUsage.DiscoverJson().GetAwaiter().GetResult()));
             return 0;
         }
         catch (Exception)
@@ -183,12 +199,14 @@ internal static class AntigravityProbe
         return (proc.HasExited ? proc.ExitCode : 1, output);
     }
 
-    /// schtasks itself elevated (the one UAC prompt), waited for to the end. 1223 when declined.
-    private static int RunElevated(string args)
+    /// Bloom itself elevated (the one UAC prompt), waited for to the end. 1223 when declined.
+    /// `file` should be this exe for the install (its publisher shows in the prompt); the elevated run
+    /// answers through its own arguments, so schtasks' output is captured instead of lost.
+    private static int RunElevated(string file, string args)
     {
         using var proc = new Process
         {
-            StartInfo = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), args)
+            StartInfo = new ProcessStartInfo(file, args)
             {
                 UseShellExecute = true,
                 Verb = "runas",
