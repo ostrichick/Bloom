@@ -115,8 +115,6 @@ internal static class AntigravityUsage
             if (!AntigravityProbe.TryReadFresh(out string json, out DateTime write)) return new();
             var servers = ParseProbeJson(json);
             if (servers.Count == 0) return new();
-            ProbeNeeded = false;
-            needLogged = false;
             at = write;
             return servers;
         }
@@ -153,12 +151,6 @@ internal static class AntigravityUsage
         return result;
     }
 
-    /// True after a live look found Antigravity running but no reachable server and no fresh probe
-    /// file: the notices offer the one-UAC probe install then. False once the task answers, the file is
-    /// fresh, or Antigravity closes.
-    internal static bool ProbeNeeded { get; private set; }
-    private static bool needLogged;
-
     private static async Task<List<Server>> Discover()
     {
         List<Server> servers;
@@ -171,14 +163,6 @@ internal static class AntigravityUsage
         {
             servers = new();
         }
-        if (servers.Count == 0 && Running)
-        {
-            // Elevated (or otherwise unreadable) command lines hide the token; only the trigger task's
-            // file can carry it. Nothing live to offer here.
-            ProbeNeeded = true;
-            if (!needLogged) { needLogged = true; Log.Write("antigravity probe needed: running but unreachable, no fresh file"); }
-        }
-        else { ProbeNeeded = false; needLogged = false; }
         return servers;
     }
 
