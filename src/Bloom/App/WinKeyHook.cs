@@ -12,6 +12,15 @@ namespace Bloom.App;
 /// frame would stall everyone's typing and Windows would silently remove the hook.
 /// Blind while an elevated window has focus (UIPI): there the elevated helper takes the press when switched on
 /// (ElevatedWinKey). Whichever hook takes a tap replays its release tagged, and the other one resyncs on it (WinTap).
+/// How far a Win tap got (Interlocked counters only; the UI thread reports them).
+/// Consumed without posted means the handoff failed; posted without fired means the hook thread
+/// never ran the message; fired without requested means the UI callback never ran.
+internal static class WinKeyDiag
+{
+    public static long Consumed, Posted, PostFailed, Fired, Requested;
+    public static string Snapshot() => $"win-key: consumed={Consumed} posted={Posted} post-failed={PostFailed} fired={Fired} requested={Requested}";
+}
+
 internal sealed class WinKeyHook : IDisposable
 {
     private const uint WM_APP_FIRE = Win32.WM_APP + 1;
@@ -59,8 +68,15 @@ internal sealed class WinKeyHook : IDisposable
             if (tap.Key(k.vkCode, down, up, k.dwExtraInfo == WinKeyProtocol.OwnTag, ModifiersHeld))
             {
                 // swallow this release; Fire() replays it behind a mask key so Start stays closed
-                Win32.PostThreadMessage(threadId, WM_APP_FIRE, (IntPtr)k.vkCode, IntPtr.Zero);
-                return new IntPtr(1);
+                Interlocked.Increment(ref WinKeyDiag.Consumed);
+                if (Win32.PostThreadMessage(threadId, WM_APP_FIRE, (IntPtr)k.vkCode, IntPtr.Zero))
+                {
+                    Interlocked.Increment(ref WinKeyDiag.Posted);
+                    return new IntPtr(1);
+                }
+                Interlocked.Increment(ref WinKeyDiag.PostFailed);
+                // the handoff failed: passing the key through (Start opens) beats swallowing it silently
+                return Win32.CallNextHookEx(hook, nCode, wParam, lParam);
             }
         }
         return Win32.CallNextHookEx(hook, nCode, wParam, lParam);
@@ -74,6 +90,7 @@ internal sealed class WinKeyHook : IDisposable
 
     private void Fire(byte winVk)
     {
+        Interlocked.Increment(ref WinKeyDiag.Fired);
         Key(WinTap.VK_MASK, false);
         Key(WinTap.VK_MASK, true);
         Key(winVk, true);

@@ -36,6 +36,8 @@ internal sealed partial class Host
     private WinKeyHook? winKey;
     private ElevatedWinKey? winKeyAdmin;
     private bool winKeyOffered; // the reinstall of a helper of another protocol was offered this run
+    private DispatcherTimer? winKeyDiag;
+    private string winKeyDiagLast = "";
     private StallWatch? stalls;
     private Tray? tray;
     private Dispatcher ui = null!;
@@ -305,6 +307,7 @@ internal sealed partial class Host
     /// A key's own Summon (hook thread or hotkey): the key is marked for SummonTrace, the opening runs on the UI thread.
     private void SummonByKey()
     {
+        Interlocked.Increment(ref WinKeyDiag.Requested);
         SummonTrace.Key();
         ui.BeginInvoke(Summon);
     }
@@ -349,6 +352,16 @@ internal sealed partial class Host
         {
             winKey = new WinKeyHook(SummonByKey);
             winKey.Start();
+            if (winKeyDiag is null)
+            {
+                winKeyDiag = new DispatcherTimer(DispatcherPriority.Background, ui) { Interval = TimeSpan.FromSeconds(15) };
+                winKeyDiag.Tick += (_, _) =>
+                {
+                    string line = WinKeyDiag.Snapshot() + $" window visible={Window.IsVisible} active={Window.IsActive}";
+                    if (line != winKeyDiagLast) { winKeyDiagLast = line; Log.Write(line); }
+                };
+            }
+            winKeyDiag.Start();
         }
         else if (!wantHook && winKey is not null)
         {
