@@ -5,7 +5,6 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Bloom.Ai;
-using Bloom.App;
 using Bloom.Core;
 using Bloom.Search;
 
@@ -62,34 +61,12 @@ internal sealed partial class SettingsView
             }, filter);
         Add(Tr("조회 간격", "How often"), Tr($"기본 계정은 홈 화면 설정의 간격대로 · 추가한 계정은 {AiUsage.ExtraMinutes}분마다 · 홈의 ↻는 모든 계정", $"Default accounts as set on the home page · added ones every {AiUsage.ExtraMinutes} min · the home's ↻ checks all"), null, G.Clock, null, null, filter);
         Header(Tr("Antigravity 사용량 읽기", "Reading Antigravity usage"));
-        bool fileFresh = AntigravityProbe.TryReadFresh(out _, out DateTime probeAt);
         bool cliOn = AntigravityUsage.FindCli() is not null;
-        bool probeOn = fileFresh || cliOn;
-        int probeMinutes = Math.Max(0, (int)(DateTime.UtcNow - probeAt).TotalMinutes);
-        string probeWhen = probeMinutes == 0 ? Tr("방금", "just now") : Tr($"{probeMinutes}분 전", $"{probeMinutes} min ago");
-        string probeStatus = probeOn
-            ? fileFresh
-                ? Tr($"자동 수집 중 · {probeWhen} 조회", $"Collecting on schedule · read {probeWhen}")
-                : Tr("agy CLI로 조회합니다 · 다음 조회부터 Gemini 카드가 나옵니다", "Reads through the agy CLI · the Gemini card comes with the next check")
-            : AntigravityUsage.Running
-                ? Tr("사용량을 읽지 못했습니다 · 한 번만 허용하면 10분마다 자동으로 읽습니다", "Can't read its usage yet · allow once and it reads every 10 minutes")
-                : Tr("Antigravity가 꺼져 있습니다 · 미리 허용해 두면 켰을 때부터 읽습니다", "Antigravity is closed · allow now and it starts reading once it runs");
-        FrameworkElement? probeEnd = probeOn
-            ? Theme.T(Tr("수집 중", "Collecting"), 12, Theme.P.Accent, Theme.Medium, false)
-            : ToolUi.Button(G.Shield, Tr("허용하고 설치", "Allow and install"), () => _ = InstallAntigravityProbe());
-        Add(Tr("Antigravity probe", "Antigravity probe"), probeStatus, probeEnd, G.Shield, null, null, filter);
-    }
-
-    /// The probe task installed from 설정 > AI 계정 (the UAC prompt waits on a thread of its own); the page
-    /// shows the new state, and the home asks again at once.
-    private async Task InstallAntigravityProbe()
-    {
-        var (ok, why) = await Task.Run(() => { var r = AntigravityProbe.Install(out string w); return (r == AntigravityProbe.Outcome.Done, w); });
-        if (ok) _ = AiUsage.Refresh();
-        Dispatcher.BeginInvoke(() => Build(lastFilter));
-        Notices.Result(ok, Tr("Antigravity · 사용량 확인", "Antigravity · Usage check"),
-            ok ? Tr("설치됐습니다 · 다음 사용량 조회부터 Gemini 카드가 나옵니다", "Installed · the Gemini card comes with the next usage refresh")
-               : Tr($"설치하지 못했습니다 · {why}", $"Not installed · {why}"), null);
+        Add(Tr("Antigravity probe", "Antigravity probe"),
+            cliOn
+                ? Tr("agy CLI로 조회합니다 · 안 열려 있어도 됩니다", "Reads through the agy CLI · Antigravity itself need not run")
+                : Tr("agy CLI가 없습니다 · Antigravity를 켜면 실행 중인 language_server에서 읽습니다", "No agy CLI · reads from the running language_server while Antigravity runs"),
+            cliOn ? Theme.T(Tr("수집 중", "Collecting"), 12, Theme.P.Accent, Theme.Medium, false) : null, G.Shield, null, null, filter);
     }
 
     /// An added account's line ends in its X (로그아웃), after the AI chat chip when it has one.

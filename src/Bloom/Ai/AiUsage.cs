@@ -156,7 +156,7 @@ internal static class AiUsage
         var c = Task.Run(() => Each(due.Where(a => a.Kind == "claude").ToList(), claude));
         var g = Task.Run(() => Each(due.Where(a => a.Kind == "chatgpt").ToList(), chatgpt));
         var antigravity = Task.Run(() => Each(new List<AiAccount> { new() { Id = AntigravityUsage.Id, Kind = AntigravityUsage.Id } },
-            AntigravityUsage.Running ? _ => AntigravityUsage.Ask() : null));
+            AntigravityUsage.Running || AntigravityUsage.FindCli() is not null ? _ => AntigravityUsage.Ask() : null));
         string? opencodeCli = OpenCodeUsage.FindCli();
         var opencode = Task.Run(() => Each(new List<AiAccount> { new() { Id = OpenCodeUsage.Id, Kind = OpenCodeUsage.Id } },
             opencodeCli is null ? null : _ => OpenCodeUsage.Ask(opencodeCli)));

@@ -66,14 +66,10 @@ internal static class AntigravityUsage
         // The agy CLI answers on its own (no token to dig out, elevated or not); the local
         // language_server is the fallback for older Antigravity builds.
         if (FindCli() is { } cli && await AskAgy(cli).ConfigureAwait(false) is { } cliCard) return cliCard;
-        List<Server> servers = ProbeServers(out DateTime at);
-        if (servers.Count == 0)
-        {
-            if (!Running) return null;
-            servers = await Discover();
-            at = DateTime.Now;
-            if (servers.Count == 0) return null;
-        }
+        if (!Running) return null;
+        List<Server> servers = await Discover();
+        DateTime at = DateTime.Now;
+        if (servers.Count == 0) return null;
         foreach (var server in servers)
             foreach (int port in server.Ports)
                 foreach (string scheme in new[] { "https", "http" })
@@ -186,52 +182,6 @@ internal static class AntigravityUsage
         return limits.Count == 0 ? null : new UsageAccount("Gemini", null, limits, at ?? DateTime.Now) { Id = Id };
     }
 
-    /// Servers from the probe task's file while it is fresh (the trigger task rewrites it every few
-    /// minutes); nothing is asked live then. Fresh failures (a rotated token) heal on the next write.
-    internal static List<Server> ProbeServers(out DateTime at)
-    {
-        at = DateTime.Now;
-        try
-        {
-            if (!AntigravityProbe.TryReadFresh(out string json, out DateTime write)) return new();
-            var servers = ParseProbeJson(json);
-            if (servers.Count == 0) return new();
-            at = write;
-            return servers;
-        }
-        catch (JsonException)
-        {
-            return new();
-        }
-    }
-
-    /// The probe file's shape: tokens and ports only, never command lines (which hold paths).
-    internal static string ProbeJson(string discoveryJson)
-    {
-        var servers = ParseServers(discoveryJson);
-        return System.Text.Json.JsonSerializer.Serialize(servers.ConvertAll(s => new { token = s.Token, ports = s.Ports }));
-    }
-
-    /// The probe file back into servers; garbage in, empty out is the caller's JsonException.
-    internal static List<Server> ParseProbeJson(string json)
-    {
-        var result = new List<Server>();
-        using var document = JsonDocument.Parse(json);
-        if (document.RootElement.ValueKind != JsonValueKind.Array) return result;
-        foreach (var item in document.RootElement.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object) continue;
-            if (!item.TryGetProperty("token", out var token) || token.ValueKind != JsonValueKind.String) continue;
-            if (token.GetString() is not { Length: > 0 } value) continue;
-            var ports = new List<int>();
-            if (item.TryGetProperty("ports", out var raw) && raw.ValueKind == JsonValueKind.Array)
-                foreach (var entry in raw.EnumerateArray())
-                    if (entry.TryGetInt32(out int port) && port is > 0 and <= 65535 && !ports.Contains(port)) ports.Add(port);
-            if (ports.Count > 0) result.Add(new Server(value, ports));
-        }
-        return result;
-    }
-
     private static async Task<List<Server>> Discover()
     {
         List<Server> servers;
@@ -247,8 +197,7 @@ internal static class AntigravityUsage
         return servers;
     }
 
-    /// The discovery script's answer, raw ("" when powershell didn't answer). The --antigravity-probe
-    /// run (SYSTEM) writes this straight to the file; the normal path parses it below.
+    /// The discovery script's answer, raw ("" when powershell didn't answer).
     internal static async Task<string> DiscoverJson()
     {
         using var proc = new Process
