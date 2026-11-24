@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -60,6 +63,9 @@ internal static class AntigravityUsage
 
     public static async Task<UsageAccount?> Ask()
     {
+        // The agy CLI answers on its own (no token to dig out, elevated or not); the local
+        // language_server is the fallback for older Antigravity builds.
+        if (FindCli() is { } cli && await AskAgy(cli).ConfigureAwait(false) is { } cliCard) return cliCard;
         List<Server> servers = ProbeServers(out DateTime at);
         if (servers.Count == 0)
         {
@@ -103,6 +109,81 @@ internal static class AntigravityUsage
                     }
                 }
         return null;
+    }
+
+    /// The installed agy CLI, asked like the other CLIs (its own sign-in is used). Null when absent.
+    public static string? FindCli()
+    {
+        string local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"agy\bin\agy.exe");
+        if (File.Exists(local)) return local;
+        foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+        {
+            try
+            {
+                if (dir.Length == 0) continue;
+                string p = Path.Combine(dir.Trim(), "agy.exe");
+                if (File.Exists(p)) return p;
+            }
+            catch
+            {
+                /* a bad PATH entry */
+            }
+        }
+        return null;
+    }
+
+    private static DateTime lastCliFailLog;
+
+    private static async Task<UsageAccount?> AskAgy(string cli)
+    {
+        try
+        {
+            var psi = OneShot.Psi(cli);
+            psi.ArgumentList.Add("-p");
+            psi.ArgumentList.Add("/usage");
+            var (code, output, _) = await OneShot.RunCli(psi, "", CancellationToken.None);
+            if (code == 0 && ParseAgy(output) is { } card) return card;
+            if (DateTime.Now - lastCliFailLog > TimeSpan.FromMinutes(10))
+            {
+                lastCliFailLog = DateTime.Now;
+                Log.Write($"antigravity cli: exit {code}, {output.Trim().Length} chars");
+            }
+            return null;
+        }
+        catch (Exception e) when (e is Win32Exception or IOException or UnauthorizedAccessException)
+        {
+            Log.Write("antigravity cli: " + e.Message);
+            return null;
+        }
+    }
+
+    /// The agy CLI's own answer (`agy -p /usage`): group, window and remaining percent per line,
+    /// e.g. `Gemini Models\tWeekly Limit Remaining\t100%\t2026-12-01T00:35:55Z`. Remaining, like
+    /// the quota summary: used is 100 minus it.
+    internal static UsageAccount? ParseAgy(string text, DateTime? at = null)
+    {
+        UsageLimit? session = null, weekly = null;
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            var m = Regex.Match(line, @"^(.*?)(\d+(?:\.\d+)?%)\s*(\S+)\s*$");
+            if (!m.Success) continue;
+            string head = m.Groups[1].Value, pct = m.Groups[2].Value, reset = m.Groups[3].Value;
+            if (!head.Contains("gemini", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!double.TryParse(pct.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out double remaining)) continue;
+            if (remaining is < 0 or > 100) continue;
+            DateTime? resets = DateTimeOffset.TryParse(reset, out var r) ? r.LocalDateTime : null;
+            double used = 100 - remaining;
+            if (head.Contains("week", StringComparison.OrdinalIgnoreCase) || head.Contains("7d", StringComparison.OrdinalIgnoreCase))
+                weekly ??= new UsageLimit(Tr("주간", "Weekly"), used, resets, UsageLimit.WeekMins);
+            else if (head.Contains("5h", StringComparison.OrdinalIgnoreCase) || head.Contains("five", StringComparison.OrdinalIgnoreCase) || head.Contains("hour", StringComparison.OrdinalIgnoreCase))
+                session ??= new UsageLimit(Tr("5시간", "5h"), used, resets, UsageLimit.SessionMins);
+        }
+        var limits = new List<UsageLimit>();
+        if (session is not null) limits.Add(session);
+        if (weekly is not null) limits.Add(weekly);
+        return limits.Count == 0 ? null : new UsageAccount("Gemini", null, limits, at ?? DateTime.Now) { Id = Id };
     }
 
     /// Servers from the probe task's file while it is fresh (the trigger task rewrites it every few

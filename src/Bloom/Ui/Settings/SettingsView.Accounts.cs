@@ -62,15 +62,19 @@ internal sealed partial class SettingsView
             }, filter);
         Add(Tr("조회 간격", "How often"), Tr($"기본 계정은 홈 화면 설정의 간격대로 · 추가한 계정은 {AiUsage.ExtraMinutes}분마다 · 홈의 ↻는 모든 계정", $"Default accounts as set on the home page · added ones every {AiUsage.ExtraMinutes} min · the home's ↻ checks all"), null, G.Clock, null, null, filter);
         Header(Tr("Antigravity 사용량 읽기", "Reading Antigravity usage"));
-        bool probeFresh = AntigravityProbe.TryReadFresh(out _, out DateTime probeAt);
+        bool fileFresh = AntigravityProbe.TryReadFresh(out _, out DateTime probeAt);
+        bool cliOn = AntigravityUsage.FindCli() is not null;
+        bool probeOn = fileFresh || cliOn;
         int probeMinutes = Math.Max(0, (int)(DateTime.UtcNow - probeAt).TotalMinutes);
         string probeWhen = probeMinutes == 0 ? Tr("방금", "just now") : Tr($"{probeMinutes}분 전", $"{probeMinutes} min ago");
-        string probeStatus = probeFresh
-            ? Tr($"자동 수집 중 · {probeWhen} 조회", $"Collecting on schedule · read {probeWhen}")
+        string probeStatus = probeOn
+            ? fileFresh
+                ? Tr($"자동 수집 중 · {probeWhen} 조회", $"Collecting on schedule · read {probeWhen}")
+                : Tr("agy CLI로 조회합니다 · 다음 조회부터 Gemini 카드가 나옵니다", "Reads through the agy CLI · the Gemini card comes with the next check")
             : AntigravityUsage.Running
                 ? Tr("사용량을 읽지 못했습니다 · 한 번만 허용하면 10분마다 자동으로 읽습니다", "Can't read its usage yet · allow once and it reads every 10 minutes")
                 : Tr("Antigravity가 꺼져 있습니다 · 미리 허용해 두면 켰을 때부터 읽습니다", "Antigravity is closed · allow now and it starts reading once it runs");
-        FrameworkElement? probeEnd = probeFresh
+        FrameworkElement? probeEnd = probeOn
             ? Theme.T(Tr("수집 중", "Collecting"), 12, Theme.P.Accent, Theme.Medium, false)
             : ToolUi.Button(G.Shield, Tr("허용하고 설치", "Allow and install"), () => _ = InstallAntigravityProbe());
         Add(Tr("Antigravity probe", "Antigravity probe"), probeStatus, probeEnd, G.Shield, null, null, filter);

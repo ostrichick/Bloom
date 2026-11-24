@@ -69,4 +69,27 @@ internal static class AntigravityUsageTests
         Lang.Force(true);
         Check.Eq(HomeViews.Duration(TimeSpan.FromMinutes(62)), "1 h 2 min", "English language setting");
     }
+
+    public static void AgyCliAnswer()
+    {
+        var result = AntigravityUsage.ParseAgy("""
+            Gemini Models	Weekly Limit Remaining	100%	2026-12-01T00:35:55Z
+            Gemini Models	Five Hour Limit Remaining	100%	2026-11-24T05:35:55Z
+            Claude and GPT models	Weekly Limit Remaining	100%	2026-12-01T00:35:55Z
+            Claude and GPT models	Five Hour Limit Remaining	100%	2026-11-24T05:35:55Z
+            """);
+        Check.True(result is not null, "the CLI answer makes a card");
+        Check.Eq(result!.Limits.Count, 2, "the Gemini pool's two windows");
+        Check.Eq((result.Limits[0].Title, result.Limits[0].Percent, result.Limits[0].WindowMins), ("5시간", 0.0, (int?)300), "session first, remaining 100% means used 0%");
+        Check.Eq((result.Limits[1].Title, result.Limits[1].Percent, result.Limits[1].WindowMins), ("주간", 0.0, (int?)10080), "then weekly");
+        Check.Eq(result.Limits[1].Resets?.ToString("yyyy-MM-dd"), "2026-12-01", "reset date kept");
+    }
+
+    public static void AgyCliPartialUse()
+    {
+        var result = AntigravityUsage.ParseAgy("Gemini Models Weekly Limit Remaining 87.5% 2026-12-01T00:35:55Z\n");
+        Check.Near(result!.Limits[0].Percent, 12.5, 0.001, "remaining 87.5% means used 12.5%");
+        Check.Eq(AntigravityUsage.ParseAgy("garbage\n\nno numbers here\n"), null, "garbage yields no card");
+        Check.Eq(AntigravityUsage.ParseAgy("Gemini Models Something Else 50% 2026-12-01T00:35:55Z\n"), null, "unknown windows are skipped, not invented");
+    }
 }
